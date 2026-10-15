@@ -100,7 +100,7 @@ func (c *Controller) Run(ctx context.Context, wg *sync.WaitGroup) {
 	}()
 	go func() {
 		defer wg.Done()
-		scheduler.startScheduler(ctx)
+		runAsLeader(ctx, defaultLeaderTimings, etcdElectorFactory(c.etcdClient), scheduler.startScheduler)
 	}()
 }
 
