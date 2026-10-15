@@ -470,23 +470,43 @@ func (c *Controller) ProcessRunnersStatusUpdate(update types.RunnerStatusUpdate)
 	return runner, nil
 }
 
+// removeNodeBinding releases the runner's binding from every node that holds
+// it, not only from runner.NodeID. A binding left on another node (e.g. from
+// a scheduling tick that overlapped a leadership change) would otherwise
+// keep that node's slot occupied forever, since nothing else ever clears it.
 func (c *Controller) removeNodeBinding(nodeID, runnerID utils.UID) error {
-	logger.Debugf("Removing runner binding from node %s", nodeID)
-	node, err := c.nodePoolManager.GetNodeByID(nodeID)
+	logger.Debugf("Removing runner %s binding, assigned node %s", runnerID, nodeID)
+	nodes, err := c.nodePoolManager.GetNodePool()
 	if err != nil {
-		logger.Errorf("Failed to get node %s runner assign to, error: %v", nodeID, err)
-		return fmt.Errorf("failed to get node %s runner assign to", nodeID)
+		logger.Errorf("Failed to get node pool to release runner %s binding, error: %v", runnerID, err)
+		return fmt.Errorf("failed to get node pool to release runner %s binding", runnerID)
 	}
-	for i, binding := range node.Status.Binding {
-		if binding.RunnerID == runnerID {
-			node.Status.Binding = append(node.Status.Binding[:i], node.Status.Binding[i+1:]...)
-			break
+	for i := range nodes {
+		node := &nodes[i]
+		if !removeRunnerBinding(node, runnerID) {
+			continue
+		}
+		if node.ID != nodeID {
+			logger.Warnf("Runner %s was also bound to node %s (assigned node %s), releasing it", runnerID, node.ID, nodeID)
+		}
+		if err := c.nodePoolManager.SaveNode(*node); err != nil {
+			logger.Errorf("Failed to update node %s binding, error: %v", node.ID, err)
+			return fmt.Errorf("failed to update node %s binding", node.ID)
 		}
 	}
-	err = c.nodePoolManager.SaveNode(*node)
-	if err != nil {
-		logger.Errorf("Failed to update node %s binding, error: %v", node.ID, err)
-		return fmt.Errorf("failed to update node %s binding", node.ID)
-	}
 	return nil
+}
+
+// removeRunnerBinding drops every binding of runnerID from node and reports
+// whether anything was removed.
+func removeRunnerBinding(node *types.Node, runnerID utils.UID) bool {
+	kept := node.Status.Binding[:0]
+	for _, binding := range node.Status.Binding {
+		if binding.RunnerID != runnerID {
+			kept = append(kept, binding)
+		}
+	}
+	removed := len(kept) != len(node.Status.Binding)
+	node.Status.Binding = kept
+	return removed
 }
