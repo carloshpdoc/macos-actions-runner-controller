@@ -19,11 +19,11 @@ package controller
 import (
 	"context"
 	"fmt"
-	"os"
 	"time"
 
 	"github.com/tomtom-international/macos-actions-runner-controller/pkg/clients/etcd"
 	"github.com/tomtom-international/macos-actions-runner-controller/pkg/logger"
+	"github.com/tomtom-international/macos-actions-runner-controller/pkg/utils"
 )
 
 const schedulerElectionKey = "/election/controller/scheduler"
@@ -54,16 +54,24 @@ type elector interface {
 type newElectorFunc func() (elector, error)
 
 func etcdElectorFactory(client *etcd.Client) newElectorFunc {
-	identity, err := os.Hostname()
-	if err != nil || identity == "" {
-		identity = fmt.Sprintf("controller-%d", time.Now().UnixNano())
-	}
+	identity := electionIdentity()
 	return func() (elector, error) {
 		return client.NewLeaderElection(etcd.ElectionConfig{
 			Identity:    identity,
 			ElectionKey: schedulerElectionKey,
 		})
 	}
+}
+
+// electionIdentity is the normalized hostname plus a random suffix, so two
+// replicas that share a hostname (docker-compose, cloned VMs) never both see
+// themselves as the leader.
+func electionIdentity() string {
+	host, err := utils.GetHostname()
+	if err != nil {
+		host = "controller"
+	}
+	return fmt.Sprintf("%s-%s", host, utils.NewShortUUID())
 }
 
 // runAsLeader runs work only while this replica holds the scheduler

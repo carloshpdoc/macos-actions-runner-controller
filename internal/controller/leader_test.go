@@ -183,3 +183,10 @@ func waitFor(t *testing.T, ch <-chan struct{}, msg string) {
 		t.Fatal(msg)
 	}
 }
+
+func TestElectionIdentity_UniquePerReplicaOnSameHost(t *testing.T) {
+	a, b := electionIdentity(), electionIdentity()
+
+	assert.NotEqual(t, a, b, "two replicas on the same hostname must not share an election identity")
+	assert.NotEmpty(t, a)
+}

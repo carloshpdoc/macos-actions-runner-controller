@@ -64,3 +64,43 @@ func TestRemoveRunnerBinding_ReportsNothingToRemove(t *testing.T) {
 	assert.False(t, removeRunnerBinding(empty, "a"))
 	assert.Empty(t, empty.Status.Binding)
 }
+
+func nodeIn(id utils.UID, status types.NodeStatus, runnerIDs ...utils.UID) types.Node {
+	n := nodeWithBindings(runnerIDs...)
+	n.ID = id
+	n.Status.Condition.Status = status
+	return *n
+}
+
+func TestReleaseRunnerBindings_ReleasesOnEveryActiveNode(t *testing.T) {
+	nodes := []types.Node{
+		nodeIn("assigned", types.Ready, "r1"),
+		nodeIn("stale", types.Ready, "r1", "r2"),
+		nodeIn("other", types.Ready, "r2"),
+	}
+
+	changed := releaseRunnerBindings(nodes, "r1")
+
+	ids := make([]utils.UID, 0, len(changed))
+	for _, n := range changed {
+		ids = append(ids, n.ID)
+	}
+	assert.Equal(t, []utils.UID{"assigned", "stale"}, ids)
+	assert.Empty(t, bindingIDs(&nodes[0]))
+	assert.Equal(t, []utils.UID{"r2"}, bindingIDs(&nodes[1]))
+	assert.Equal(t, []utils.UID{"r2"}, bindingIDs(&nodes[2]), "nodes without the runner are untouched")
+}
+
+func TestReleaseRunnerBindings_SkipsDeregisteredNodes(t *testing.T) {
+	nodes := []types.Node{
+		nodeIn("deregistered", types.Deregistered, "r1"),
+		nodeIn("ready", types.Ready, "r1"),
+	}
+
+	changed := releaseRunnerBindings(nodes, "r1")
+
+	assert.Len(t, changed, 1)
+	assert.Equal(t, utils.UID("ready"), changed[0].ID)
+	assert.Equal(t, []utils.UID{"r1"}, bindingIDs(&nodes[0]),
+		"a deregistered node must not be rewritten, it keeps its expiry lease")
+}

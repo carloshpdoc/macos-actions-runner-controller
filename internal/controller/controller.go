@@ -19,6 +19,7 @@ package controller
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net"
 	"sync"
@@ -474,6 +475,11 @@ func (c *Controller) ProcessRunnersStatusUpdate(update types.RunnerStatusUpdate)
 // it, not only from runner.NodeID. A binding left on another node (e.g. from
 // a scheduling tick that overlapped a leadership change) would otherwise
 // keep that node's slot occupied forever, since nothing else ever clears it.
+//
+// Deregistered nodes are skipped: they were saved with an expiry lease and
+// are about to disappear, and a plain SaveNode would strip that lease.
+// A failure on one node does not stop the others from being released; all
+// errors are returned joined.
 func (c *Controller) removeNodeBinding(nodeID, runnerID utils.UID) error {
 	logger.Debugf("Removing runner %s binding, assigned node %s", runnerID, nodeID)
 	nodes, err := c.nodePoolManager.GetNodePool()
@@ -481,20 +487,34 @@ func (c *Controller) removeNodeBinding(nodeID, runnerID utils.UID) error {
 		logger.Errorf("Failed to get node pool to release runner %s binding, error: %v", runnerID, err)
 		return fmt.Errorf("failed to get node pool to release runner %s binding", runnerID)
 	}
-	for i := range nodes {
-		node := &nodes[i]
-		if !removeRunnerBinding(node, runnerID) {
-			continue
-		}
+	var errs []error
+	for _, node := range releaseRunnerBindings(nodes, runnerID) {
 		if node.ID != nodeID {
 			logger.Warnf("Runner %s was also bound to node %s (assigned node %s), releasing it", runnerID, node.ID, nodeID)
 		}
 		if err := c.nodePoolManager.SaveNode(*node); err != nil {
 			logger.Errorf("Failed to update node %s binding, error: %v", node.ID, err)
-			return fmt.Errorf("failed to update node %s binding", node.ID)
+			errs = append(errs, fmt.Errorf("failed to update node %s binding: %w", node.ID, err))
 		}
 	}
-	return nil
+	return errors.Join(errs...)
+}
+
+// releaseRunnerBindings drops runnerID's bindings from every node in the pool
+// except deregistered ones, and returns the nodes that changed and must be
+// saved.
+func releaseRunnerBindings(nodes []types.Node, runnerID utils.UID) []*types.Node {
+	var changed []*types.Node
+	for i := range nodes {
+		node := &nodes[i]
+		if node.Status.Condition.Status == types.Deregistered {
+			continue
+		}
+		if removeRunnerBinding(node, runnerID) {
+			changed = append(changed, node)
+		}
+	}
+	return changed
 }
 
 // removeRunnerBinding drops every binding of runnerID from node and reports
